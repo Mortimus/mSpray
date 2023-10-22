@@ -25,6 +25,7 @@ func main() {
 	validPassword := flag.String("validPassword", "", "Provide a valid password for downloading password policy and enabled users")
 	domain := flag.String("d", "", "Domain Name")
 	domainController := flag.String("dc", "", "Domain Controller Hostname or IP")
+	threads := flag.Int("threads", 50, "Set the amount of concurrency threads for spraying")
 	// wordlist := flag.String("wordlist", "", "Wordlist of passwords to attempt")
 	// usernames := flag.String("usernames", "", "List of Users to spray against")
 	// minLength := flag.Int("minPasswordLength", 0, "Minimum password length for skipping passwords")
@@ -64,7 +65,7 @@ func main() {
 			fmt.Printf("Error spraying %s: %s", *victim, pass)
 		}
 	} else {
-		spray(users, passwords, *domain, *domainController, policy, 50)
+		spray(users, passwords, *domain, *domainController, policy, *threads)
 	}
 }
 
